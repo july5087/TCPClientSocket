@@ -1,19 +1,25 @@
 package com.example.tcpclientsocket_ex;
 
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.fragment.app.FragmentActivity;
 
 import android.os.Build;
 import android.os.Bundle;
 import android.os.StrictMode;
 import android.os.Trace;
+import android.os.storage.StorageManager;
+import android.speech.tts.TextToSpeech;
 import android.util.Log;
 import android.view.View;
 import android.widget.Button;
 import android.widget.EditText;
+import android.widget.TextView;
 import android.widget.Toast;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.OutputStream;
+import java.net.InetAddress;
 import java.net.Socket;
 import java.net.UnknownHostException;
 
@@ -21,18 +27,29 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
 
     String TAG = "jhlee";
 
-    public Button btConnect = findViewById(R.id.bt_connect);
-    public Button btStart = findViewById(R.id.bt_start);
-    public Button btStop = findViewById(R.id.bt_stop);
-    public Button btCheck = findViewById(R.id.bt_check);
-    public Button btDisconnect = findViewById(R.id.bt_disconnect);
-    public EditText etIpText = (EditText) findViewById(R.id.et_ipText);
+    public Button btConnect;
+    public Button btStart;
+    public Button btStop;
+    public Button btCheck;
+    public Button btDisconnect;
+    public EditText etIpText;
+    public TextView tvByText;
+    public TextView tvDataText;
     private Socket socket;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
+
+        btConnect = findViewById(R.id.bt_connect);
+        btStart = findViewById(R.id.bt_start);
+        btStop = findViewById(R.id.bt_stop);
+        btCheck = findViewById(R.id.bt_check);
+        btDisconnect = findViewById(R.id.bt_disconnect);
+        etIpText = findViewById(R.id.et_ipText);
+        tvByText = findViewById(R.id.tv_byteText);
+        tvDataText = findViewById(R.id.tv_recvByte);
 
         btConnect.setOnClickListener(this);
         btDisconnect.setOnClickListener(this);
@@ -115,6 +132,21 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
 
     class StartThread extends Thread {
 
+        int bytes;
+        String Dtmp;
+        int dlen;
+
+        public StartThread(){
+        }
+
+        public String byteArrayToHex(byte[] a){
+            StringBuilder sb = new StringBuilder();
+            for(final byte b : a){
+                sb.append(String.format("%02x", b&0xff));
+            }
+            return sb.toString();
+        }
+
         public void run(){
             // 데이터 송신
             try{
@@ -131,12 +163,57 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
             // 데이터 수신
             try{
                 Log.d(TAG, "데이터 수신 준비");
-                
+
                 // TODO : 수신 데이터(프로토콜) 처리
-                
+                while(true){
+                    byte[] buffer = new byte[1024];
+                    InputStream input = socket.getInputStream();
+
+                    bytes = input.read(buffer);
+                    Log.d(TAG, "byte = " + bytes);
+                    
+                    // 바이트 헥사(String)로 바꿔서 Dtmp string에 저장
+                    Dtmp = byteArrayToHex(buffer);
+                    Dtmp = Dtmp.substring(0, bytes * 3);
+                    Log.d(TAG, Dtmp);
+
+                    // 프로토콜 나누기
+                    String[] Dsplit = Dtmp.split("a5 5a"); // sync(2byte) 0xA5, 0x5A
+                    Dtmp = "";
+                    for(int i=1; i<Dsplit.length-1; i++){ // 제일 처음과 끝은 잘림. 데이터 버린다.
+                        Dtmp = Dtmp + Dsplit[i] + "\n";
+                    }
+                    dlen = Dsplit.length - 2;
+
+                    runOnUiThread(new Runnable() {
+                        @Override
+                        public void run() {
+                            tvDataText.setText(Dtmp);
+                            tvByText.setText("데이터 " + dlen + "개");
+                        }
+                    });
+                }
             } catch (IOException e){
                 e.printStackTrace();
                 Log.e(TAG, "데이터 수신 에러");
+            }
+        }
+    }
+
+    class StopThread extends Thread {
+        public StopThread(){
+        }
+
+        public void run(){
+            // 데이터 송신
+            try{
+                String OutData = "AT+STOP\n";
+                byte[] data = OutData.getBytes();
+                OutputStream output = socket.getOutputStream();
+                output.write(data);
+                Log.d(TAG, "AT+STOP\\n COMMAND 송신");
+            } catch (IOException e){
+                e.printStackTrace();
             }
         }
     }
@@ -153,18 +230,21 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
                 start();
                 break;
             case R.id.bt_stop:
+                // 데이터 송수신 중지
+                stop();
                 break;
             case R.id.bt_disconnect:
+                disconnect();
                 // 연결 해제
                 break;
             case R.id.bt_check:
                 // 연결상태 확인
+                check();
                 break;
         }
     }
 
     public void connect() {
-
         try{
             Socket socket = new Socket("192.168.0.8", 35005);
         } catch (UnknownHostException e) {
@@ -186,6 +266,42 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
 
     public void start(){
         StartThread sthread = new StartThread();
+        btStart.setEnabled(false);
+        btStop.setEnabled(true);
+
         sthread.start();
+    }
+
+    public void stop(){
+        StopThread spthread = new StopThread();
+        btStart.setEnabled(true);
+        btStop.setEnabled(false);
+        spthread.start();
+    }
+
+    public void disconnect(){
+        try{
+            socket.close();
+            Toast.makeText(getApplicationContext(), "Disconnect", Toast.LENGTH_SHORT).show();
+            btDisconnect.setEnabled(false);
+            btConnect.setEnabled(true);
+            btStart.setEnabled(false);
+            btStop.setEnabled(false);
+        } catch (IOException e){
+            e.printStackTrace();
+            Toast.makeText(getApplicationContext(), "Disconnect 실패", Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    public void check(){
+        boolean isConnect = socket.isClosed();
+        InetAddress addr = socket.getInetAddress();
+        String tmp = addr.getHostAddress();
+
+        if(!isConnect){
+            Toast.makeText(getApplicationContext(), tmp + "연결중", Toast.LENGTH_SHORT).show();
+        } else{
+            Toast.makeText(getApplicationContext(), "연결 안됨", Toast.LENGTH_SHORT).show();
+        }
     }
 }
